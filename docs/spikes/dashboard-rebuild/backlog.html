@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backlog — pup dashboard</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <span class="project">pupitre</span>
+  <nav aria-label="Screens">
+    <a href="home.html">Home <span class="chip attn">3</span></a>
+    <a href="backlog.html">Backlog</a>
+    <a href="debt.html">Debt</a>
+    <a href="usage.html">Usage</a>
+    <a href="projects.html">Projects</a>
+  </nav>
+  <span class="live" role="status"><span class="chip ok">live</span> updated 14:02:12</span>
+</header>
+
+<main id="main">
+  <h1>Backlog</h1>
+  <section class="panel" aria-labelledby="bl-h" data-region="backlog">
+    <header><h2 id="bl-h">Planned tasks</h2><span class="count">7 unclaimed, queue order</span>
+      <label class="sr-only" for="f">Filter tasks</label><input id="f" type="search" placeholder="Filter ( / )"></header>
+    <ul class="rows">
+      <li class="row"><span class="chip">queued</span>
+        <span><span class="title"><strong>Add pup plan lint</strong></span><br><span class="meta">t-mwt3c2 · scope src/cli/plan* · 3 criteria</span></span>
+        <button type="button" class="btn primary">Launch</button></li>
+      <li class="row"><span class="chip attn">overlap</span>
+        <span><span class="title"><strong>Radar heartbeat docs</strong></span><br><span class="meta">t-mwt3c5 · scope docs/05* · overlaps t-mwt7a1 on docs/05-knowledge-layer.md</span></span>
+        <button type="button" class="btn">Launch anyway…</button></li>
+      <li class="row"><span class="chip">queued</span>
+        <span><span class="title"><strong>Retire the ink dashboard flags</strong></span><br><span class="meta">t-mwt3d9 · scope src/cli/ui/** · 2 criteria</span></span>
+        <button type="button" class="btn primary">Launch</button></li>
+    </ul>
+    <p class="hint">Showing 3 of 7. Launch needs a free slot; the status line says why when it refuses.</p>
+  </section>
+</main>
+</body>
+</html>

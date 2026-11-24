@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review t-mws3q9 — pup dashboard</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <span class="project">pupitre</span>
+  <nav aria-label="Screens">
+    <a href="home.html">Home <span class="chip attn">3</span></a>
+    <a href="backlog.html">Backlog</a>
+    <a href="debt.html">Debt</a>
+    <a href="usage.html">Usage</a>
+    <a href="projects.html">Projects</a>
+  </nav>
+  <span class="live" role="status"><span class="chip ok">live</span> updated 14:02:11</span>
+</header>
+
+<main id="main">
+  <p class="crumbs"><a href="home.html">Home</a> / <a href="session.html">t-mws3q9</a> / Review</p>
+  <header>
+    <h1>Cap conductor replies</h1>
+    <p class="hint"><span class="chip attn">awaiting review</span> branch <code>pup/t-mws3q9</code> · rejected once</p>
+  </header>
+
+  <div class="split">
+    <div class="stack">
+      <section class="panel" aria-labelledby="gate-h" data-region="gate">
+        <header><h2 id="gate-h">Gate result</h2><span class="chip bad">refused</span></header>
+        <p>1 flag: <strong>oversize diff</strong>, +612 −88 over the 400-line bar.</p>
+        <table>
+          <thead><tr><th scope="col">Check</th><th scope="col">Result</th><th class="num" scope="col">Figure</th></tr></thead>
+          <tbody>
+            <tr><td>Tests</td><td><span class="chip ok">pass</span></td><td class="num">412 / 412</td></tr>
+            <tr><td>Coverage</td><td><span class="chip ok">pass</span></td><td class="num">83.4% (+0.2)</td></tr>
+            <tr><td>Unused exports</td><td><span class="chip ok">pass</span></td><td class="num">0</td></tr>
+            <tr><td>Diff size</td><td><span class="chip bad">flag</span></td><td class="num">700 lines</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel" aria-labelledby="acc-h">
+        <header><h2 id="acc-h">Acceptance criteria</h2></header>
+        <ul class="rows">
+          <li class="row"><span class="chip ok">met</span><span>replies are capped at 4 000 characters</span><span></span></li>
+          <li class="row"><span class="chip ok">met</span><span>the cut keeps a trailing marker</span><span></span></li>
+          <li class="row"><span class="chip">unchecked</span><span>docs name the cap</span><span class="meta">gate does not judge prose</span></li>
+        </ul>
+      </section>
+
+      <section class="panel" aria-labelledby="diff-h">
+        <header><h2 id="diff-h">What changed</h2><span class="hint">diffstat; the full diff stays in the PR</span></header>
+        <p class="mono diffstat">src/core/conductor-reply.service.ts <span class="add">+210</span> <span class="del">−40</span><br>
+          test/unit/core/conductor-reply.test.ts <span class="add">+380</span> <span class="del">−12</span><br>
+          docs/04-gates-and-debt.md <span class="add">+22</span> <span class="del">−36</span></p>
+        <p class="hint">Scope: 3 of 3 files inside scope-in; none widened.</p>
+      </section>
+    </div>
+
+    <aside class="stack" aria-label="Decide">
+      <section class="panel">
+        <h2>Decide</h2>
+        <p class="hint">A merge always opens a PR. The target branch moves only through Land, after you merge on GitHub.</p>
+        <button type="button" class="btn primary">Gate with PR…</button>
+        <button type="button" class="btn">Steer to fix first</button>
+        <fieldset class="fields">
+          <legend>Accept the flag as debt</legend>
+          <label for="why">Reason<input id="why" type="text" value="Test fixtures dominate the diff"></label>
+          <label for="by">Review by<input id="by" type="text" value="2026-12-21"></label>
+          <label for="who">Approved by<input id="who" type="text" value="human"></label>
+        </fieldset>
+      </section>
+    </aside>
+  </div>
+
+  <!-- Confirmation: the server's two-step rule, shown in the page rather than the browser's confirm() -->
+  <dialog open aria-labelledby="c-h" aria-describedby="c-d">
+    <form method="dialog">
+      <h2 id="c-h">Gate t-mws3q9 and open a PR?</h2>
+      <p id="c-d" class="hint">This accepts debt and cannot be taken back from here.</p>
+      <dl>
+        <dt>Runs</dt><dd><code>pup merge t-mws3q9 --pr</code></dd>
+        <dt>Accepts</dt><dd>1 flag: oversize diff</dd>
+        <dt>Reason</dt><dd>Test fixtures dominate the diff</dd>
+        <dt>Review by</dt><dd>2026-12-21</dd>
+        <dt>Approved by</dt><dd>human</dd>
+      </dl>
+      <div class="actions"><button class="btn primary" value="ok">Gate and open PR</button>
+        <button class="btn" value="cancel" autofocus>Cancel</button></div>
+    </form>
+  </dialog>
+</main>
+</body>
+</html>

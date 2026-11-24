@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects — pup dashboard</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <span class="project">pupitre</span>
+  <nav aria-label="Screens">
+    <a href="home.html">Home <span class="chip attn">3</span></a>
+    <a href="backlog.html">Backlog</a>
+    <a href="debt.html">Debt</a>
+    <a href="usage.html">Usage</a>
+    <a href="projects.html">Projects</a>
+  </nav>
+  <span class="live" role="status"><span class="chip ok">live</span> updated 14:02:12</span>
+</header>
+
+<main id="main">
+  <h1>Projects</h1>
+  <p class="hint">Read-only. To act on a project, run <code>pup --project &lt;id&gt; dashboard</code>; each project has its own token.</p>
+  <section class="panel" aria-labelledby="pr-h" data-region="projects">
+    <header><h2 id="pr-h">Registered projects</h2><span class="count">3 active, 1 dormant</span></header>
+    <table>
+      <caption class="sr-only">Projects with what waits on you</caption>
+      <thead><tr><th scope="col">Project</th><th scope="col">Needs you</th><th class="num" scope="col">Running</th><th class="num" scope="col">Open PRs</th><th class="num" scope="col">Open debt</th></tr></thead>
+      <tbody>
+        <tr><td><strong>pupitre</strong> <span class="hint">(this one)</span></td><td><span class="chip attn">3 waiting</span></td><td class="num">3</td><td class="num">1</td><td class="num">12</td></tr>
+        <tr><td><strong>copiste</strong></td><td><span class="chip ok">nothing</span></td><td class="num">1</td><td class="num">0</td><td class="num">4</td></tr>
+        <tr><td><strong>atelier</strong></td><td><span class="chip bad">conductor unreachable</span></td><td class="num">0</td><td class="num">2</td><td class="num">7</td></tr>
+        <tr><td><strong>archive</strong></td><td><span class="chip">dormant</span></td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+</body>
+</html>
